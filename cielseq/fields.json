@@ -1,0 +1,16 @@
+{
+  "Cygnus": [
+    ["19h30m00s", "38d00m00s", "Cygnus 1"],
+    ["19h50m00s", "38d00m00s", "Cygnus 2"]
+  ],
+  "Virgo": [
+    ["12h00m00s", "00d00m00s", "Virgo 1"],
+    ["12h10m00s", "00d00m00s", "Virgo 2"],
+    ["12h20m00s", "00d00m00s", "Virgo 3"]
+  ],
+  "Coma Berenices": [
+    ["13h05m00s", "20d00m00s", "Coma Berenices 1"],
+    ["13h15m00s", "20d00m00s", "Coma Berenices 2"],
+    ["13h25m00s", "20d00m00s", "Coma Berenices 3"]
+  ]
+}
