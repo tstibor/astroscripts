@@ -7,6 +7,60 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from pathlib import Path
 
+import xml.etree.ElementTree as ET
+
+def create_calibration_sequence_block(start_index):
+    targets = []
+
+    common_attrs = {
+        "RA": "-", "Dec": "-", "PA": "-", "Skip": "False", "Delay": "1", "EndSet": "False", "EndTime": "",
+        "Preview": "False", "FlatBinX": "0", "FlatBinY": "0", "FlatGain": "0", "FullOnly": "False",
+        "DarkNight": "False", "FlatCount": "0", "FlatFstop": "", "Magnitude": "-", "StartRise": "False",
+        "StartTime": "", "FlatOffset": "0", "ObjectName": "Script", "RepeatDone": "0", "ScriptArgs": "",
+        "EndMeridian": "-9999", "FlatFilters": "", "HFM_Enabled": "False", "RepeatCount": "1",
+        "UpdateCoord": "False", "AutofocusTemp": "False", "MoonAvoidance": "False", "SolarTracking": "False",
+        "StartMeridian": "-9999", "PreviewExposure": "1", "InplaceAutofocus": "False",
+        "MandatoryStartTime": "False", "NoAutoguidingChange": "False"
+    }
+
+    # Target1: cover_close
+    t1 = ET.Element(f"Target{start_index}", attrib={**common_attrs, **{
+        "Plan": "cover_close", "Path": "/home/tstibor/.config/ccdciel/", "AstrometryPointing": "True"
+    }})
+    ET.SubElement(t1, "InitScript", InitScript="False", InitScriptArgs="", InitScriptName="", InitScriptPath="")
+    targets.append(t1)
+
+    # Target2: calibrator_on
+    t2 = ET.Element(f"Target{start_index+1}", attrib={**common_attrs, **{
+        "Plan": "calibrator_on", "Path": "/home/tstibor/.config/ccdciel/", "AstrometryPointing": "True"
+    }})
+    ET.SubElement(t2, "InitScript", InitScript="False", InitScriptArgs="", InitScriptName="", InitScriptPath="")
+    targets.append(t2)
+
+    # Target3: flats
+    t3 = ET.Element(f"Target{start_index+2}", attrib={**common_attrs, **{
+        "Plan": "Flats", "Path": "", "ObjectName": "Take Flats", "AstrometryPointing": "False"
+    }})
+    ET.SubElement(t3, "InitScript", InitScript="False", InitScriptArgs="", InitScriptName="calibrator_off", InitScriptPath="/home/tstibor/.config/ccdciel/")
+    plan = ET.SubElement(t3, "Plan", Name="Flats", StepNum="1")
+    steps = ET.SubElement(plan, "Steps")
+    ET.SubElement(steps, "Step1", Done="0", Gain="1", Type="0", Count="40", Fstop="", Dither="False",
+                  Filter="No change", Offset="0", Binning="1x1", Exposure="0.1", Autofocus="False",
+                  FrameType="Flat", ScriptArgs="", ScriptName="", ScriptPath="", StackCount="1",
+                  SwitchName="", Description="Flats", DitherCount="0", RefExposure="", SwitchValue="",
+                  AutofocusCount="0", AutofocusStart="False", SwitchNickname="")
+    targets.append(t3)
+
+    # Target4: calibrator_off
+    t4 = ET.Element(f"Target{start_index+3}", attrib={**common_attrs, **{
+        "Plan": "calibrator_off", "Path": "/home/tstibor/.config/ccdciel/", "AstrometryPointing": "True"
+    }})
+    ET.SubElement(t4, "InitScript", InitScript="False", InitScriptArgs="", InitScriptName="", InitScriptPath="")
+    targets.append(t4)
+
+    return targets
+
+
 def write_cdc_custom_file(filename, fields, fov):
     fov_deg = max(fov) * 60.0
     with open(filename, "w") as f:
@@ -158,7 +212,7 @@ def write_obslist_file(filename, fields, list_title="Generated Observing List"):
 
 def generate_all_outputs(all_fields, base_name, fov, plan_name, args):
 
-    config = ET.Element("CONFIG", Version="5", ListName="Fields", TargetNum=str(len(all_fields)), RepeatCount="1")
+    config = ET.Element("CONFIG", Version="5", ListName="Fields", TargetNum=str(len(all_fields)+4), RepeatCount="1")
     targets = ET.SubElement(config, "Targets", RepeatDone="0", ResetRepeat="True", IgnoreRestart="False")
 
     for idx, (ra, dec, name) in enumerate(all_fields, 1):
@@ -186,19 +240,23 @@ def generate_all_outputs(all_fields, base_name, fov, plan_name, args):
         "ErrorRunScript": "False"
     })
 
+    flat_sequence = create_calibration_sequence_block(len(all_fields) + 1)
+    for target in flat_sequence:
+        targets.append(target)
+
     # Write ccdciel targets sequence file.
     xml_str = ET.tostring(config, encoding="utf-8")
     pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
     Path(f"{base_name}.targets").write_text(pretty_xml)
-    print(f"✅ Created {base_name}.targets")
+    print(f"Created {base_name}.targets")
 
     # Write skychart observation list.
     write_obslist_file(f"{base_name}.txt", all_fields)
-    print(f"✅ Created {base_name}.txt")
+    print(f"Created {base_name}.txt")
 
     # Write custom object skychart file.
     write_cdc_custom_file(f"{base_name}.custom", all_fields, fov)
-    print(f"✅ Created {base_name}.custom")
+    print(f"Created {base_name}.custom")
 
 def load_constellations_fields(json_path):
     with open(json_path, "r") as f:
