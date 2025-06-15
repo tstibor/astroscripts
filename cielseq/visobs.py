@@ -13,7 +13,7 @@ import datetime
 
 def parse_arguments():
     """
-    Parses command-line arguments for the plot date and JSON file path.
+    Parses command-line arguments for the plot date, JSON file path, and optional RA/Dec.
     Automatically handles --help to show usage information.
     """
     parser = argparse.ArgumentParser(
@@ -21,16 +21,26 @@ def parse_arguments():
         formatter_class=argparse.RawTextHelpFormatter # Keeps formatting for multiline help
     )
     parser.add_argument(
-        '--date', 
-        type=str, 
-        help='Date for the plot in ISO-MM-DD format (e.g., 2025-06-11).\nDefaults to the current date if not provided.', 
+        '--date',
+        type=str,
+        help='Date for the plot in ISO-MM-DD format (e.g., 2025-06-11).\nDefaults to the current date if not provided.',
         default=None
     )
     parser.add_argument(
-        '--json-file', 
-        type=str, 
-        help='Path to the JSON file containing celestial object data.\nDefaults to "fields.json" if not provided.', 
+        '--json-file',
+        type=str,
+        help='Path to the JSON file containing celestial object data.\nDefaults to "fields.json" if not provided.\nIgnored if --ra and --dec are provided.',
         default='fields.json'
+    )
+    parser.add_argument(
+        '--ra',
+        type=str,
+        help='Right Ascension (e.g., "10h30m00s" or "157.5d"). If provided, --dec must also be provided. Ignores --json-file.'
+    )
+    parser.add_argument(
+        '--dec',
+        type=str,
+        help='Declination (e.g., "+30d00m00s" or "30d"). If provided, --ra must also be provided. Ignores --json-file.'
     )
     args = parser.parse_args()
 
@@ -40,12 +50,16 @@ def parse_arguments():
             plot_date = datetime.datetime.strptime(args.date, '%Y-%m-%d').date()
         except ValueError:
             print("Error: Invalid date format for --date. Please use ISO-MM-DD (e.g., 2025-06-11).")
-            # If invalid date, we let it fall through to use today's date or exit in main if critical
             plot_date = datetime.date.today()
     else:
         plot_date = datetime.date.today()
-    
-    return plot_date, args.json_file
+
+    # Handle RA/Dec arguments
+    ra_dec_provided = args.ra is not None or args.dec is not None
+    if ra_dec_provided and (args.ra is None or args.dec is None):
+        parser.error("Both --ra and --dec must be provided if one is used.")
+
+    return plot_date, args.json_file, args.ra, args.dec
 
 def load_json_data(file_path='fields.json'):
     """
@@ -69,10 +83,10 @@ def load_json_data(file_path='fields.json'):
 def setup_observer_and_times(plot_date):
     """
     Defines the observer's location and generates a series of times for calculations.
-    
+
     Args:
         plot_date (datetime.date): The date for which to generate the time series.
-        
+
     Returns:
         tuple: A tuple containing:
             - observer (astroplan.Observer): The observer object.
@@ -104,31 +118,47 @@ def setup_observer_and_times(plot_date):
         time_offset_local = 2 * u.hour # Central European Summer Time (CEST)
     else:
         time_offset_local = 1 * u.hour # Central European Time (CET)
-    
+
     times_local = times_utc + time_offset_local # Calculate corresponding local times
 
     return observer, times_utc, times_local, time_start_utc, time_end_utc, time_offset_local, tomorrow_date
 
-def create_targets(json_data, times_utc, observer_location):
+def create_targets(json_data, times_utc, observer_location, custom_ra=None, custom_dec=None):
     """
-    Creates FixedTarget objects from the loaded JSON data and adds the Moon.
-    
+    Creates FixedTarget objects from the loaded JSON data or from custom RA/Dec, and adds the Moon.
+
     Args:
         json_data (dict): Dictionary containing celestial object coordinates and names.
         times_utc (astropy.time.Time): A series of UTC times used for Moon's ephemeris.
         observer_location (astropy.coordinates.EarthLocation): The observer's location.
-        
+        custom_ra (str, optional): Right Ascension string for a custom target.
+        custom_dec (str, optional): Declination string for a custom target.
+
     Returns:
         list: A list of astroplan.FixedTarget objects.
     """
     targets = []
-    # Iterate through constellations and objects to create FixedTarget instances
-    for constellation, objects in json_data.items():
-        for ra_str, dec_str, name in objects:
-            coords = ICRS(ra=ra_str, dec=dec_str) # Create ICRS coordinates
-            target = FixedTarget(coord=coords, name=name)
+
+    if custom_ra and custom_dec:
+        try:
+            coords = ICRS(ra=custom_ra, dec=custom_dec)
+            # Directly set the name to the formatted RA/Dec string for the legend
+            target_name = f"RA: {custom_ra}, Dec: {custom_dec}"
+            target = FixedTarget(coord=coords, name=target_name)
             targets.append(target)
-    
+        except ValueError as e:
+            print(f"Error: Invalid RA/Dec format for custom target: {e}")
+    elif json_data:
+        # Iterate through constellations and objects to create FixedTarget instances
+        for constellation, objects in json_data.items():
+            for ra_str, dec_str, name in objects:
+                try:
+                    coords = ICRS(ra=ra_str, dec=dec_str) # Create ICRS coordinates
+                    target = FixedTarget(coord=coords, name=name)
+                    targets.append(target)
+                except ValueError as e:
+                    print(f"Warning: Could not parse coordinates for '{name}' ({ra_str}, {dec_str}): {e}. Skipping this target.")
+
     # Add the Moon as a dynamic target (its position changes with time)
     moon_coords = get_body('moon', times_utc, observer_location)
     moon_target = FixedTarget(coord=moon_coords, name="Moon")
@@ -138,7 +168,7 @@ def create_targets(json_data, times_utc, observer_location):
 def plot_sky_darkness(ax, observer, times_utc_for_calc, times_plot_date):
     """
     Calculates and plots shaded regions representing different levels of sky darkness.
-    
+
     Args:
         ax (matplotlib.axes.Axes): The matplotlib axes object to plot on.
         observer (astroplan.Observer): The observer object.
@@ -182,7 +212,7 @@ def plot_sky_darkness(ax, observer, times_utc_for_calc, times_plot_date):
 def plot_object_altitudes(ax, observer, times_utc_for_calc, times_plot_date, targets):
     """
     Calculates and plots the altitude profiles for all celestial targets.
-    
+
     Args:
         ax (matplotlib.axes.Axes): The matplotlib axes object to plot on.
         observer (astroplan.Observer): The observer object.
@@ -194,17 +224,20 @@ def plot_object_altitudes(ax, observer, times_utc_for_calc, times_plot_date, tar
         # Calculate altitude and azimuth for each target at the given UTC times
         altaz_frames = observer.altaz(times_utc_for_calc, target)
         altitudes = altaz_frames.alt.to(u.deg).value
-        
+
+        # The target.name will already be the desired label (either from JSON or formatted RA/Dec)
+        label_name = target.name
+
         # Plot the altitude data using the specified plot times for the x-axis
         if target.name == "Moon":
-            ax.plot(times_plot_date.plot_date, altitudes, label=target.name, linestyle='--', zorder=1)
+            ax.plot(times_plot_date.plot_date, altitudes, label=label_name, linestyle='--', zorder=1)
         else:
-            ax.plot(times_plot_date.plot_date, altitudes, label=target.name, zorder=1)
+            ax.plot(times_plot_date.plot_date, altitudes, label=label_name, zorder=1)
 
 def add_twilight_labels(ax, observer, plot_date, tomorrow_date, time_start_utc, time_end_utc, time_offset_local, times_local_for_plot):
     """
     Adds vertical lines and text labels to the plot indicating specific twilight start/end times.
-    
+
     Args:
         ax (matplotlib.axes.Axes): The matplotlib axes object to plot on.
         observer (astroplan.Observer): The observer object.
@@ -214,7 +247,7 @@ def add_twilight_labels(ax, observer, plot_date, tomorrow_date, time_start_utc, 
         time_end_utc (astropy.time.Time): The end time of the plot in UTC.
         time_offset_local (astropy.units.quantity.Quantity): The local time offset from UTC.
         times_local_for_plot (astropy.time.Time): The local time array used for main x-axis plotting.
-        
+
     Returns:
         dict: A dictionary containing the UTC Time objects for various twilight phases.
     """
@@ -232,8 +265,7 @@ def add_twilight_labels(ax, observer, plot_date, tomorrow_date, time_start_utc, 
     )
     date_for_twilights_morning = Time(
         f"{tomorrow_date.year}-"
-        f"{tomorrow_date.month:02d}-"
-        f"{tomorrow_date.day:02d}T00:00:00", # Start of tomorrow for morning twilights
+        f"{tomorrow_date.month:02d}-{tomorrow_date.day:02d}T00:00:00", # Start of tomorrow for morning twilights
         format='isot', scale='utc'
     )
 
@@ -274,7 +306,7 @@ def add_twilight_labels(ax, observer, plot_date, tomorrow_date, time_start_utc, 
     add_label(ax, twilight_end_astro_utc, "Astro Twilight End", y_pos_astro, color_astro_twilight)
     add_label(ax, twilight_end_nautical_utc, "Nautical Twilight End", y_pos_nautical, color_nautical)
     add_label(ax, twilight_end_civil_utc, "Civil Twilight End", y_pos_civil, color_civil)
-    
+
     # Return the twilight times in UTC for use in the info box
     return {
         "civil_dusk": twilight_start_civil_utc,
@@ -289,7 +321,7 @@ def add_twilight_labels(ax, observer, plot_date, tomorrow_date, time_start_utc, 
 def add_twilight_info_box(ax, observer, twilight_times, time_offset_local):
     """
     Adds a text box to the top right corner of the plot summarizing twilight times.
-    
+
     Args:
         ax (matplotlib.axes.Axes): The matplotlib axes object to plot on.
         observer (astroplan.Observer): The observer object (added for sun_alt_min_utc calculation).
@@ -317,7 +349,7 @@ def add_twilight_info_box(ax, observer, twilight_times, time_offset_local):
     if twilight_times['civil_dusk'] and twilight_times['astro_dusk'] and (twilight_times['astro_dusk'].jd >= twilight_times['civil_dusk'].jd):
          twilight_info += f"  Astronomical Dusk: {astro_dusk_formatted}\n"
          twilight_info += f"  Astronomical Dawn: {format_time_or_na(twilight_times['astro_dawn'])}\n"
-    
+
     # Check if any twilight occurred (more robust check, including potential "no night" scenarios)
     # This re-calculates sun altitude at civil dusk if available, otherwise defaults to 90 (sun always up)
     sun_alt_at_civil_dusk = observer.altaz(twilight_times['civil_dusk'], get_body('sun', twilight_times['civil_dusk'], observer.location)).alt.to(u.deg).value if twilight_times['civil_dusk'] else 90
@@ -336,7 +368,7 @@ def add_twilight_info_box(ax, observer, twilight_times, time_offset_local):
 def configure_plot(fig, ax1, ax2, plot_date, observer, time_offset_local, times_utc, times_local):
     """
     Configures the plot's titles, labels, legends, and axis formatting.
-    
+
     Args:
         fig (matplotlib.figure.Figure): The main figure object.
         ax1 (matplotlib.axes.Axes): The primary matplotlib axes (bottom X-axis).
@@ -393,30 +425,36 @@ def main():
     """
     Main function to orchestrate the celestial observation plotting process.
     """
-    plot_date, json_file_path = parse_arguments()
+    plot_date, json_file_path, custom_ra, custom_dec = parse_arguments()
     # If date parsing failed or an invalid date was given that couldn't default to today, exit.
-    if plot_date is None: 
-        return
-
-    json_data = load_json_data(json_file_path)
-    if json_data is None:
+    if plot_date is None:
         return
 
     # Get observer, UTC times, Local times, and other time-related data
     observer, times_utc, times_local, time_start_utc, time_end_utc, time_offset_local, tomorrow_date = setup_observer_and_times(plot_date)
 
-    targets = create_targets(json_data, times_utc, observer.location)
+    if custom_ra and custom_dec:
+        targets = create_targets(None, times_utc, observer.location, custom_ra, custom_dec)
+    else:
+        json_data = load_json_data(json_file_path)
+        if json_data is None:
+            return
+        targets = create_targets(json_data, times_utc, observer.location)
+
+    if not targets:
+        print("No celestial objects to plot. Exiting.")
+        return
 
     fig, ax1 = plt.subplots(figsize=(14, 8)) # Create figure and primary axes
 
     # Plot sky darkness and object altitudes using local times for the x-axis, but UTC for calculations
-    plot_sky_darkness(ax1, observer, times_utc, times_local) 
+    plot_sky_darkness(ax1, observer, times_utc, times_local)
     plot_object_altitudes(ax1, observer, times_utc, times_local, targets)
-    
+
     # Add twilight time labels and info box
     twilight_times = add_twilight_labels(ax1, observer, plot_date, tomorrow_date, time_start_utc, time_end_utc, time_offset_local, times_local)
     # Pass the observer object to add_twilight_info_box
-    add_twilight_info_box(ax1, observer, twilight_times, time_offset_local) 
+    add_twilight_info_box(ax1, observer, twilight_times, time_offset_local)
 
     ax2 = ax1.twiny() # Create a twin x-axis for UTC time
     configure_plot(fig, ax1, ax2, plot_date, observer, time_offset_local, times_utc, times_local) # Configure plot aesthetics
